@@ -2,6 +2,7 @@
 
 import ezgpx
 import matplotlib.pyplot as plt
+import polars as pl
 
 
 # config
@@ -17,4 +18,4 @@ newgpx.simplify()
 newgpx.remove_metadata()
 
 # Write new simplified GPX file
-newgpx.to_gpx(gpxpath + "new_TacoRide.gpx")
+# newgpx.to_gpx(gpxpath + "new_TacoRide.gpx")
