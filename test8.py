@@ -22,6 +22,7 @@ non_empty_layers = []
 for layer in layers:
     try:
         gdf = gpd.read_file(gpx_file, layer=layer)
+        print("CRS: " + str(gdf.crs))
         print(f"Layer '{layer}' contains {len(gdf)} features.")
         if not gdf.empty:
             non_empty_layers.append(layer)
