@@ -9,6 +9,7 @@ dependencies = [
     "geojson-transformer>=0.0.7",
     "geopandas[all]>=1.1.1",
     "h3>=4.3.1",
+    "ipykernel>=6.30.1",
     "lxml>=6.0.0",
     "matplotlib",
     "polars",
