@@ -9,6 +9,7 @@ dependencies = [
     "geopandas[all]>=1.1.1",
     "lxml>=6.0.0",
     "matplotlib",
+    "pandas>=2.2.3",
     "polars",
     "pyarrow>=21.0.0",
 ]

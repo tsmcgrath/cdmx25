@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>La Condesa — Track Viewer</title>
+
+  <!-- Mapbox GL JS CSS -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.css" rel="stylesheet" />
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100vh; width: 100vw; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Mapbox GL JS -->
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.js"></script>
+  <script>
+    mapboxgl.accessToken = 'YOUR_MAPBOX_ACCESS_TOKEN';
+
+    // Approximate La Condesa bounds (fallback if loading the track fails)
+    const condesaBounds = new mapboxgl.LngLatBounds(
+      [-99.1820, 19.4027], // SW
+      [-99.1678, 19.4207]  // NE
+    );
+
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/streets-v12',
+      center: [-99.174, 19.4118],
+      zoom: 14.5,
+      hash: true
+    });
+    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+    map.addControl(new mapboxgl.FullscreenControl(), 'top-right');
+
+    const TRACK_URL = 'data/TacoRidePoints.geojson';
+
+    map.on('load', async () => {
+      try {
+        const res = await fetch(TRACK_URL, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const raw = await res.json();
+
+        // Prepare: ensure we have a FeatureCollection of Points and a derived LineString
+        const prepared = prepareTrack(raw);
+        addSourcesAndLayers(prepared);
+
+        // Fit to bounds of line (preferred) or points
+        const b = computeBounds(prepared.line || prepared.points);
+        if (b) map.fitBounds(b, { padding: 40, maxZoom: 17, duration: 600 });
+      } catch (err) {
+        console.error('Failed to load track at', TRACK_URL, err);
+        map.fitBounds(condesaBounds, { padding: 40, duration: 0 });
+      }
+    });
+
+    function addSourcesAndLayers({ points, line }) {
+      // Points source/layer
+      map.addSource('taco-pts-src', { type: 'geojson', data: points });
+      map.addLayer({
+        id: 'taco-pts',
+        type: 'circle',
+        source: 'taco-pts-src',
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            10, 3,
+            16, 6
+          ],
+          'circle-color': '#1e90ff',
+          'circle-stroke-color': '#fff',
+          'circle-stroke-width': 1.5
+        }
+      });
+
+      // If we have a derived line, draw casing + line
+      if (line) {
+        map.addSource('taco-line-src', { type: 'geojson', data: line });
+
+        map.addLayer({
+          id: 'taco-line-casing',
+          type: 'line',
+          source: 'taco-line-src',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#ffffff',
+            'line-width': 8,
+            'line-opacity': 0.35
+          }
+        });
+
+        map.addLayer({
+          id: 'taco-line',
+          type: 'line',
+          source: 'taco-line-src',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#ffe752',
+            'line-width': 4,
+            'line-opacity': 0.95
+          }
+        });
+
+        // Start/End markers from line coordinates
+        const coords = line.geometry.coordinates;
+        addEndpointMarker(coords[0], 'Start');
+        addEndpointMarker(coords[coords.length - 1], 'End');
+      } else {
+        // Fallback start/end from first/last point
+        const feats = points.features;
+        if (feats.length >= 2) {
+          addEndpointMarker(feats[0].geometry.coordinates, 'Start');
+          addEndpointMarker(feats[feats.length - 1].geometry.coordinates, 'End');
+        }
+      }
+    }
+
+    function addEndpointMarker(lngLat, label) {
+      new mapboxgl.Marker({ color: label === 'Start' ? '#1abc9c' : '#e74c3c' })
+        .setLngLat(lngLat)
+        .setPopup(new mapboxgl.Popup({ offset: 24 }).setText(label))
+        .addTo(map);
+    }
+
+    // --- Prep helpers ---
+
+    // Accepts:
+    //  - FeatureCollection of Points (common for "track points")
+    //  - LineString/MultiLineString, Feature, or FeatureCollection
+    // Returns a { points: FeatureCollection<Point>, line: Feature<LineString>|null }
+    function prepareTrack(gj) {
+      // Normalize to FeatureCollection for iteration
+      const fc = toFeatureCollection(gj);
+      const pointFeats = [];
+      for (const f of fc.features) {
+        if (!f || !f.geometry) continue;
+        if (f.geometry.type === 'Point') pointFeats.push(f);
+        else if (f.geometry.type === 'MultiPoint') {
+          for (const c of f.geometry.coordinates) {
+            pointFeats.push({
+              type: 'Feature',
+              properties: f.properties || {},
+              geometry: { type: 'Point', coordinates: c }
+            });
+          }
+        }
+      }
+
+      // Sort points by time/timestamp if present, else keep file order
+      const sortable = ['time', 'timestamp', 'Time', 'Timestamp'];
+      const hasSortable = pointFeats.some(f => hasAny(f.properties, sortable));
+      if (hasSortable) {
+        pointFeats.sort((a, b) => {
+          const ta = pickTime(a.properties);
+          const tb = pickTime(b.properties);
+          return (ta ?? 0) - (tb ?? 0);
+        });
+      }
+
+      // If the original data already contains a LineString, prefer that
+      const line = findFirstLine(fc) || (pointFeats.length >= 2
+        ? {
+            type: 'Feature',
+            properties: { derivedFrom: 'points' },
+            geometry: {
+              type: 'LineString',
+              coordinates: pointFeats.map(f => f.geometry.coordinates)
+            }
+          }
+        : null);
+
+      return {
+        points: { type: 'FeatureCollection', features: pointFeats },
+        line
+      };
+    }
+
+    function toFeatureCollection(gj) {
+      if (!gj) return { type: 'FeatureCollection', features: [] };
+      if (gj.type === 'FeatureCollection') return gj;
+      if (gj.type === 'Feature') return { type: 'FeatureCollection', features: [gj] };
+      // Geometry → wrap
+      return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: gj }] };
+    }
+
+    function findFirstLine(fc) {
+      for (const f of fc.features) {
+        if (!f || !f.geometry) continue;
+        if (f.geometry.type === 'LineString') return f;
+        if (f.geometry.type === 'MultiLineString') {
+          // flatten first line
+          const first = f.geometry.coordinates?.[0];
+          if (first && first.length >= 2) {
+            return {
+              type: 'Feature',
+              properties: f.properties || {},
+              geometry: { type: 'LineString', coordinates: first }
+            };
+          }
+        }
+        if (f.geometry.type === 'GeometryCollection') {
+          for (const g of f.geometry.geometries || []) {
+            if (g.type === 'LineString') return { type: 'Feature', properties: f.properties || {}, geometry: g };
+          }
+        }
+      }
+      return null;
+    }
+
+    function hasAny(obj, keys) {
+      if (!obj) return false;
+      return keys.some(k => k in obj);
+    }
+
+    function pickTime(props) {
+      if (!props) return null;
+      // Try parse ISO date strings or numeric epoch millis/seconds
+      const candidates = ['time', 'timestamp', 'Time', 'Timestamp'];
+      for (const k of candidates) {
+        if (!(k in props)) continue;
+        const v = props[k];
+        if (typeof v === 'number') {
+          // Heuristic: seconds vs millis
+          return v > 1e12 ? v : v * 1000;
+        }
+        const t = Date.parse(v);
+        if (!Number.isNaN(t)) return t;
+      }
+      return null;
+    }
+
+    // --- Bounds helper ---
+
+    function computeBounds(geojson) {
+      if (!geojson) return null;
+      const bounds = new mapboxgl.LngLatBounds();
+      let has = false;
+
+      const visit = (g) => {
+        if (!g) return;
+        switch (g.type) {
+          case 'Point': {
+            const [x, y] = g.coordinates;
+            bounds.extend([x, y]); has = true;
+            break;
+          }
+          case 'MultiPoint':
+          case 'LineString':
+            for (const c of g.coordinates) { bounds.extend(c); has = true; }
+            break;
+          case 'MultiLineString':
+          case 'Polygon':
+            for (const ring of g.coordinates) for (const c of ring) { bounds.extend(c); has = true; }
+            break;
+          case 'MultiPolygon':
+            for (const poly of g.coordinates) for (const ring of poly) for (const c of ring) { bounds.extend(c); has = true; }
+            break;
+          case 'GeometryCollection':
+            for (const gg of g.geometries) visit(gg);
+            break;
+        }
+      };
+
+      if (geojson.type === 'Feature') visit(geojson.geometry);
+      else if (geojson.type === 'FeatureCollection') for (const f of geojson.features) visit(f.geometry);
+      else visit(geojson);
+
+      return has ? bounds : null;
+    }
+  </script>
+</body>
+</html>

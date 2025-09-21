@@ -19,6 +19,7 @@ dependencies = [
     { name = "geopandas", extra = ["all"] },
     { name = "lxml" },
     { name = "matplotlib" },
+    { name = "pandas" },
     { name = "polars" },
     { name = "pyarrow" },
 ]
@@ -31,6 +32,7 @@ requires-dist = [
     { name = "geopandas", extras = ["all"], specifier = ">=1.1.1" },
     { name = "lxml", specifier = ">=6.0.0" },
     { name = "matplotlib" },
+    { name = "pandas", specifier = ">=2.2.3" },
     { name = "polars" },
     { name = "pyarrow", specifier = ">=21.0.0" },
 ]

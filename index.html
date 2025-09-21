@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Animated Track — La Condesa</title>
+
+  <!-- Mapbox GL JS CSS -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.css" rel="stylesheet" />
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100vh; width: 100vw; }
+    .hud {
+      position: absolute; z-index: 2; left: 12px; bottom: 12px;
+      padding: 6px 10px; border-radius: 8px; background: rgba(255,255,255,0.85);
+      font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    .hud button { margin-right: 6px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="hud">
+    <button id="playPause">Pause</button>
+    <span id="timeLabel">00:00</span>
+  </div>
+
+  <!-- Mapbox GL JS -->
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.js"></script>
+  <script>
+    mapboxgl.accessToken = 'YOUR_MAPBOX_ACCESS_TOKEN';
+
+    // ====== Config ======
+    const TRACK_URL = 'data/TacoRidePoints.geojson';
+    const CORN_YELLOW = [248, 210, 74]; // RGB "corn yellow"
+    const PLAYBACK_DURATION_MS = 30000; // compress full timeline to 30s
+    const LINE_WIDTH = 5;
+
+    // ====== Map init ======
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/streets-v12',
+      center: [-99.174, 19.4118], // La Condesa
+      zoom: 14.5,
+      hash: true
+    });
+    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+    map.addControl(new mapboxgl.FullscreenControl(), 'top-right');
+
+    // Fallback bounds if loading fails
+    const fallbackBounds = new mapboxgl.LngLatBounds([-99.1820, 19.4027], [-99.1678, 19.4207]);
+
+    // ====== State for animation ======
+    let samples = null;   // [{tMs, progress}], sorted by tMs; progress in [0,1]
+    let tMin = 0, tMax = 0, tSpan = 0;
+    let playing = true;
+    let startPerf = 0;    // performance.now() at animation (re)start
+    let pausedAt = 0;     // elapsed when paused
+    const timeLabelEl = document.getElementById('timeLabel');
+    const playPauseEl = document.getElementById('playPause');
+
+    playPauseEl.onclick = () => {
+      if (!samples) return;
+      if (playing) {
+        playing = false;
+        pausedAt = performance.now() - startPerf;
+        playPauseEl.textContent = 'Play';
+      } else {
+        playing = true;
+        startPerf = performance.now() - pausedAt;
+        playPauseEl.textContent = 'Pause';
+        requestAnimationFrame(tick);
+      }
+    };
+
+    map.on('load', async () => {
+      try {
+        const res = await fetch(TRACK_URL, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const raw = await res.json();
+
+        // Prepare line + timeline samples
+        const prep = prepareLineAndTimeline(raw);
+        if (!prep || prep.coords.length < 2) throw new Error('Not enough coordinates to animate.');
+
+        // Add source with lineMetrics for line-progress
+        map.addSource('route-src', {
+          type: 'geojson',
+          lineMetrics: true, // REQUIRED for ['line-progress']
+          data: {
+            type: 'Feature',
+            properties: {},
+            geometry: { type: 'LineString', coordinates: prep.coords }
+          }
+        });
+
+        // Animated line layer (no points)
+        map.addLayer({
+          id: 'route-animated',
+          type: 'line',
+          source: 'route-src',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-width': LINE_WIDTH,
+            // We'll update 'line-gradient' every frame to reveal the line up to `progress`.
+            'line-gradient': [
+              'interpolate', ['linear'], ['line-progress'],
+              0, rgba(CORN_YELLOW, 1),
+              0, rgba(CORN_YELLOW, 0) // placeholder; gets replaced on first tick
+            ]
+          }
+        });
+
+        // Fit to full route
+        const bounds = coordsBounds(prep.coords);
+        if (bounds) map.fitBounds(bounds, { padding: 40, maxZoom: 17, duration: 600 });
+        else map.fitBounds(fallbackBounds, { padding: 40, duration: 0 });
+
+        // Init timeline
+        samples = prep.samples;
+        tMin = prep.tMin;
+        tMax = prep.tMax;
+        tSpan = Math.max(1, tMax - tMin);
+
+        // Start animation
+        playing = true;
+        playPauseEl.textContent = 'Pause';
+        startPerf = performance.now();
+        requestAnimationFrame(tick);
+      } catch (err) {
+        console.error('Failed to load or render track:', err);
+        map.fitBounds(fallbackBounds, { padding: 40, duration: 0 });
+        document.querySelector('.hud').style.display = 'none';
+      }
+    });
+
+    // ====== Animation loop ======
+    function tick(now) {
+      if (!playing || !samples) return;
+
+      const elapsed = now - startPerf;
+      const u = Math.min(1, elapsed / PLAYBACK_DURATION_MS); // 0..1 playback
+      const tNow = tMin + u * tSpan;                          // mapped to original timeline
+
+      // progress along the line (0..1) corresponding to original time tNow
+      const p = progressAtTime(samples, tNow);
+
+      // Update HUD
+      timeLabelEl.textContent = formatClock(u * tSpan / 1000);
+
+      // Update gradient: colored up to p, transparent after
+      const grad = [
+        'interpolate', ['linear'], ['line-progress'],
+        0, rgba(CORN_YELLOW, 1),
+        p, rgba(CORN_YELLOW, 1),
+        p, rgba(CORN_YELLOW, 0),
+        1, rgba(CORN_YELLOW, 0)
+      ];
+      map.setPaintProperty('route-animated', 'line-gradient', grad);
+
+      if (u < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        // Finished: keep full line visible
+        map.setPaintProperty('route-animated', 'line-gradient', rgba(CORN_YELLOW, 1));
+        playPauseEl.textContent = 'Replay';
+        playing = false;
+        pausedAt = 0;
+      }
+    }
+
+    // ====== Prep & math helpers ======
+
+    // Build a LineString coordinate array and timeline samples:
+    //  - If input is Points with time/timestamp, sort by time and derive line + {tMs, progress}.
+    //  - If input is a LineString without times, synthesize uniform times.
+    function prepareLineAndTimeline(gj) {
+      const fc = toFeatureCollection(gj);
+
+      // Try to extract points with time
+      const pts = [];
+      for (const f of fc.features) {
+        if (!f || !f.geometry) continue;
+        const g = f.geometry;
+        if (g.type === 'Point') {
+          pts.push({ coord: g.coordinates, tMs: pickTimeMs(f.properties) });
+        } else if (g.type === 'MultiPoint') {
+          for (const c of g.coordinates) {
+            pts.push({ coord: c, tMs: pickTimeMs(f.properties) });
+          }
+        }
+      }
+
+      if (pts.length >= 2) {
+        // Sort by tMs if any exist; otherwise keep file order
+        const hasTime = pts.some(p => p.tMs != null);
+        if (hasTime) pts.sort((a, b) => (a.tMs ?? 0) - (b.tMs ?? 0));
+
+        // If some points missing time, synthesize monotonic times
+        let tMin = Infinity, tMax = -Infinity;
+        for (const p of pts) {
+          if (p.tMs != null) { tMin = Math.min(tMin, p.tMs); tMax = Math.max(tMax, p.tMs); }
+        }
+        if (!Number.isFinite(tMin) || tMin === tMax) {
+          // all missing or identical -> synthesize uniform timeline
+          tMin = 0; tMax = pts.length - 1;
+          pts.forEach((p, i) => p.tMs = i);
+        } else {
+          // fill gaps by linear interpolation along index
+          const firstIdx = pts.findIndex(p => p.tMs != null);
+          let lastKnown = { idx: firstIdx, t: pts[firstIdx].tMs };
+          for (let i = firstIdx - 1; i >= 0; i--) pts[i].tMs = lastKnown.t - (firstIdx - i) * 1000;
+          for (let i = firstIdx + 1; i < pts.length; i++) {
+            if (pts[i].tMs == null) pts[i].tMs = pts[i - 1].tMs + 1000; // 1s steps for gaps
+          }
+          tMin = Math.min(...pts.map(p => p.tMs));
+          tMax = Math.max(...pts.map(p => p.tMs));
+        }
+
+        const coords = pts.map(p => p.coord);
+        const cum = cumulativeDistances(coords);
+        const total = cum[cum.length - 1] || 1;
+        const samples = pts.map((p, i) => ({ tMs: p.tMs, progress: (cum[i] / total) }));
+
+        return { coords, samples, tMin, tMax };
+      }
+
+      // Else: look for a LineString
+      const line = findFirstLine(fc);
+      if (line && line.length >= 2) {
+        const coords = line;
+        const cum = cumulativeDistances(coords);
+        const total = cum[cum.length - 1] || 1;
+        // Synthesize uniform time along vertices
+        const tMin = 0, tMax = coords.length - 1;
+        const samples = coords.map((_, i) => ({ tMs: i, progress: (cum[i] / total) }));
+        return { coords, samples, tMin, tMax };
+      }
+
+      return null;
+    }
+
+    function toFeatureCollection(gj) {
+      if (!gj) return { type: 'FeatureCollection', features: [] };
+      if (gj.type === 'FeatureCollection') return gj;
+      if (gj.type === 'Feature') return { type: 'FeatureCollection', features: [gj] };
+      return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: gj }] };
+    }
+
+    function findFirstLine(fc) {
+      for (const f of fc.features) {
+        const g = f && f.geometry;
+        if (!g) continue;
+        if (g.type === 'LineString') return g.coordinates;
+        if (g.type === 'MultiLineString') {
+          const first = g.coordinates?.[0];
+          if (first && first.length >= 2) return first;
+        }
+        if (g.type === 'GeometryCollection') {
+          for (const gg of g.geometries || []) if (gg.type === 'LineString') return gg.coordinates;
+        }
+      }
+      return null;
+    }
+
+    function pickTimeMs(props) {
+      if (!props) return null;
+      for (const k of ['time', 'timestamp', 'Time', 'Timestamp']) {
+        if (!(k in props)) continue;
+        const v = props[k];
+        if (typeof v === 'number') return v > 1e12 ? v : v * 1000; // guess sec vs ms
+        const t = Date.parse(v);
+        if (!Number.isNaN(t)) return t;
+      }
+      return null;
+    }
+
+    function cumulativeDistances(coords) {
+      const out = [0];
+      for (let i = 1; i < coords.length; i++) {
+        out[i] = out[i - 1] + haversine(coords[i - 1], coords[i]);
+      }
+      return out;
+    }
+
+    // meters between two [lng,lat]
+    function haversine(a, b) {
+      const R = 6371000;
+      const toRad = d => d * Math.PI / 180;
+      const [lon1, lat1] = a, [lon2, lat2] = b;
+      const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+      const s = Math.sin(dLat/2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(s));
+    }
+
+    function coordsBounds(coords) {
+      if (!coords || coords.length === 0) return null;
+      const b = new mapboxgl.LngLatBounds(coords[0], coords[0]);
+      for (const c of coords) b.extend(c);
+      return b;
+    }
+
+    // Given sorted samples [{tMs, progress}], find progress at time t (ms), interp linearly.
+    function progressAtTime(samples, tMs) {
+      if (tMs <= samples[0].tMs) return 0;
+      const last = samples[samples.length - 1];
+      if (tMs >= last.tMs) return 1;
+
+      // Binary search
+      let lo = 0, hi = samples.length - 1;
+      while (hi - lo > 1) {
+        const mid = (hi + lo) >> 1;
+        if (samples[mid].tMs <= tMs) lo = mid; else hi = mid;
+      }
+      const a = samples[lo], b = samples[hi];
+      const u = (tMs - a.tMs) / Math.max(1, (b.tMs - a.tMs));
+      return a.progress + u * (b.progress - a.progress);
+    }
+
+    function rgba([r, g, b], a) {
+      return `rgba(${r},${g},${b},${a})`;
+    }
+
+    function formatClock(secondsFloat) {
+      const s = Math.max(0, Math.floor(secondsFloat));
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+    }
+  </script>
+</body>
+</html>
