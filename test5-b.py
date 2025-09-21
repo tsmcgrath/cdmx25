@@ -7,12 +7,12 @@ from fiona import Geometry, Feature, Properties
 
 # config
 gpx_path = "/Users/tim/DocumentsLocal/Github/cdmx25/data-in/"
-gjson_path = "/Users/tim/DocumentsLocal/Github/cdmx25/data-out/"
+out_path = "/Users/tim/DocumentsLocal/Github/cdmx25/data-out/"
 # testplt_gpx = plt.subplots()
 
 # Read the GPX file
 gpx_file = (gpx_path + "LuckyLake.gpx")
-gjson_file = (gjson_path + "LuckyLake.geojson")
+outfile_root = "LuckyLake"
 
 # List available layers
 layers = fiona.listlayers(gpx_file)
@@ -25,7 +25,8 @@ for layer in layers:
         print(f"Layer '{layer}' contains {len(gdf)} features.")
         if not gdf.empty:
             non_empty_layers.append(layer)
-            gdf.to_file(gjson_file, driver='GeoJSON')
+            outfile = str(out_path + outfile_root + "-" + layer + "-" + ".geojson")
+            gdf.to_file(outfile, driver='GeoJSON')
     except Exception as e:
         print(f"Error reading layer '{layer}': {e}")
 
