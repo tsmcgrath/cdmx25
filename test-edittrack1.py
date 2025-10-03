@@ -37,6 +37,7 @@ for layer in layers:
             # Convert UTC time to local time
             gdf_cleaned['local-dtime'] = pd.to_datetime(gdf_cleaned['time'])
             gdf_cleaned['local-dtime'] = gdf_cleaned['local-dtime'].dt.tz_convert(mexico_city_tz)
+            print("Min:", gdf_cleaned.min(['local-dtime']))
             # Output GeoJson
             gdf_cleaned.to_file(outfile, driver='GeoJSON')
     except Exception as e:
