@@ -3,6 +3,7 @@ name = ""
 version = "0.0.1"
 requires-python = "~=3.12"
 dependencies = [
+    "duckdb>=1.4.3",
     "ezgpx",
     "fiona>=1.10.1",
     "folium>=0.19.7",
