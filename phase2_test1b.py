@@ -9,6 +9,27 @@ import matplotlib.pyplot as plt
 import fiona
 from fiona import Geometry, Feature, Properties
 
+# Subprocess example:
+import subprocess
+result = subprocess.run(
+    ["ls", "-la"],
+    capture_output=True,
+    text=True,
+    check=True
+)
+print(result.stdout)
+
+# Use pathlib
+from pathlib import Path
+logs = Path("logs")
+for file in logs.glob("*.txt"):
+    print(file.name)
+
+# Use loguru
+from loguru import logger
+logger.add("automation.log")
+logger.info("Task started")
+
 # config
 gpx_path = "/Users/tim/DocumentsLocal/Github/cdmx25/data-in/"
 outpath = "/Users/tim/DocumentsLocal/Github/cdmx25/data-out/"
